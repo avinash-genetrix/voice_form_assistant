@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+beautifulsoup4
+requests
+playwright
+sqlalchemy 
+psycopg2-binary
+openai == 0.28
+cryptography 
+dotenv
+inflect
+number-parser
+google-cloud-speech
+google-cloud-texttospeech
+dateutils
+websockets

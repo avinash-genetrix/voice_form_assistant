@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Form Assistant Tester</title>
+  <style>
+    body {
+      font-family: 'Arial', sans-serif;
+      background-color: #f4f7fa;
+      margin: 0;
+      padding: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      padding: 20px;
+      height: 100vh;
+      box-sizing: border-box;
+    }
+
+    .form-container {
+      background-color: #fff;
+      padding: 20px;
+      border-radius: 10px;
+      box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      height: 100%;
+    }
+
+    h2,
+    h3 {
+      text-align: center;
+      color: #333;
+    }
+
+    label {
+      font-weight: bold;
+      display: block;
+      margin-bottom: 5px;
+      color: #555;
+    }
+
+    input,
+    select,
+    textarea,
+    button {
+      padding: 10px;
+      margin: 10px 0;
+      width: 100%;
+      border: 1px solid #ccc;
+      border-radius: 5px;
+      box-sizing: border-box;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus,
+    button:focus {
+      border-color: #6c63ff;
+      outline: none;
+    }
+
+    .form-field {
+      margin-bottom: 20px;
+    }
+
+    .button-group {
+      display: flex;
+      gap: 10px;
+      margin-top: 10px;
+    }
+
+    .button-group button {
+      padding: 10px 20px;
+      font-size: 16px;
+      cursor: pointer;
+      border: none;
+      border-radius: 5px;
+      transition: background-color 0.3s;
+      width: 100%;
+    }
+
+    .button-group button.active {
+      background-color: #6c63ff;
+      color: white;
+    }
+
+    .button-group button.inactive {
+      background-color: #f0f0f0;
+      color: #333;
+    }
+
+    .error-message {
+      color: red;
+      text-align: center;
+      margin-top: 15px;
+    }
+
+    .checkbox-label {
+      font-weight: normal;
+      display: inline-block;
+      margin-left: 5px;
+    }
+
+    .form-field input[type="checkbox"],
+    .form-field input[type="radio"] {
+      width: auto;
+      margin-right: 10px;
+    }
+
+    .rendered-form-container {
+      grid-column: 2;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      padding-top: 10px;
+    }
+
+    @media (max-width: 768px) {
+      body {
+        grid-template-columns: 1fr;
+      }
+
+      .form-container,
+      .rendered-form-container {
+        width: 100%;
+      }
+    }
+
+    #transcript {
+      margin: 20px 0;
+      font-size: 18px;
+      color: #333;
+      font-weight: bold;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="form-container">
+    <h2>🔍 Voice Form Assistant</h2>
+    <label for="url">Enter form page URL:</label>
+    <input id="url" type="text" placeholder="https://example.com/contact" />
+    <div class="button-group">
+      <button id="voice-assistant-btn" class="inactive" onclick="toggleButton('voice-assistant')">Voice
+        Assistant</button>
+      <button id="voice-submission-btn" class="inactive" onclick="toggleButton('voice-submission')">Voice
+        Submission</button>
+    </div>
+    <button id="analyze-form-btn" onclick="analyze_form()">Analyze Form</button>
+  </div>
+  <div class="rendered-form-container">
+    <h3>🧩 Rendered Form:</h3>
+    <form id="rendered-form"></form>
+    <div id="error-container" class="error-message"></div>
+    <div id="toast" style="
+        position: fixed;
+        top: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background: #F44336;
+        color: white;
+        padding: 12px 20px;
+        border-radius: 5px;
+        display: none;
+        z-index: 1000;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        font-weight: 500;
+      ">
+    </div>
+
+    <script>
+      let ws = null;
+      let audioContext, processor, stream;
+      let currentQuestionIndex = 0;
+      function disconnect() {
+        if (ws) {
+          ws.close(); // This will trigger onclose handler
+          ws = null;
+          stopRecording();
+          // Optionally update UI here too
+        }
+      }
+      async function startWebSocketAndTTS() {
+        console.log("startWebSocketAndTTS called");
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+        ws = new WebSocket("ws://127.0.0.1:8000/stt");
+        ws.onopen = () => {
+          console.log("WebSocket opened");
+          speakQuestion(currentQuestionIndex);
+        };
+        ws.onclose = (event) => {
+          stopRecording();
+          ws = null;
+
+          alert("WebSocket disconnected! The session has ended.");
+
+          // ✅ Save current URL value
+          const urlInput = document.getElementById("url");
+          const urlValue = urlInput.value;
+
+          // ✅ Reset UI
+          document.getElementById('transcript').innerText = "";
+          document.querySelector(".rendered-form-container h3").innerHTML = "🧩 Form Status:";
+          document.getElementById("rendered-form").innerHTML = "";
+          document.getElementById("error-container").innerText = "Session disconnected. Please re-analyze the form."; // show message separately
+
+          // ✅ Restore and re-enable inputs/buttons
+          urlInput.value = urlValue;
+          urlInput.disabled = false;
+
+          document.getElementById("voice-assistant-btn").classList.remove("active");
+          document.getElementById("voice-assistant-btn").classList.add("inactive");
+          document.getElementById("voice-submission-btn").classList.remove("active");
+          document.getElementById("voice-submission-btn").classList.add("inactive");
+
+          // ✅ Re-enable Analyze Form
+          document.querySelector("button[onclick='analyze_form()']").disabled = false;
+
+          // ✅ Clear state
+          window.questions = [];
+          currentQuestionIndex = 0;
+        };
+        ws.onmessage = (event) => {
+          let data;
+          console.log("ws.onmessage triggered");
+          try {
+            data = JSON.parse(event.data);
+            // Auto submit form if type is auto_submit
+            if (data.type === 'auto_submit') {
+              console.log(':rocket: Auto-submitting form...');
+              // Collect all filled form data
+              const formData = {};
+              const form = document.querySelector('form');
+              if (form) {
+                const formDataObj = new FormData(form);
+                for (let [key, value] of formDataObj.entries()) {
+                  formData[key] = value;
+                }
+              }
+              // Send data to backend for submission
+              fetch('/submit-form', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  target_url: window.currentFormUrl, // Store this when analyzing form
+                  form_data: formData
+                })
+              })
+                .then(response => response.json())
+                .then(result => {
+                  if (result.success) {
+                    console.log(':white_tick: Form submitted successfully!', result);
+                    showToast('Form submitted successfully! :white_tick:', 'success');
+                    // :white_tick: ADD THIS CODE TO CLEAR THE FORM
+                    const form = document.querySelector('form');
+                    if (form) {
+                      form.reset(); // Clear all form fields
+                      // Additional clearing for specific field types
+                      const checkboxes = form.querySelectorAll('input[type="checkbox"]');
+                      const radios = form.querySelectorAll('input[type="radio"]');
+                      checkboxes.forEach(cb => cb.checked = false);
+                      radios.forEach(radio => radio.checked = false);
+                      // Clear select dropdowns to first option
+                      const selects = form.querySelectorAll('select');
+                      selects.forEach(select => select.selectedIndex = 0);
+                      console.log(':broom: Form cleared successfully!');
+                    }
+                    // Optional: redirect to success page or show confirmation
+                    setTimeout(() => {
+                      if (result.final_url && result.final_url !== window.location.href) {
+                        window.location.href = result.final_url;
+                      }
+                    }, 2000);
+                  } else {
+                    console.error(':x: Form submission failed:', result.message);
+                    showToast('Form submission failed: ' + result.message, 'error');
+                  }
+                })
+                .catch(error => {
+                  console.error(':x: Submission error:', error);
+                  showToast('Error submitting form: ' + error.message, 'error');
+                });
+            }
+            if (data.type === "fill_field") {
+              fillField(data.field_name, data.value);
+            }
+          } catch {
+            // fallback for string transcript only
+            data = { transcript: event.data };
+          }
+          // document.getElementById('transcript').innerText = "You said: " + (data.transcript || "");
+          setTimeout(() => {
+            stopRecording();
+            currentQuestionIndex++;
+            if (currentQuestionIndex < window.questions.length) {
+              console.log("Calling speakQuestion", currentQuestionIndex);
+              speakQuestion(currentQuestionIndex);
+            } else {
+              console.log("✅ All questions done.");
+            }
+          }, 500);
+        };
+      }
+      async function speakQuestion(index) {
+        if (window.questions && index < window.questions.length) {
+          const res = await fetch("/tts-audio", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: window.questions[index] }),
+          });
+          if (res.ok) {
+            const blob = await res.blob();
+            const audio = new Audio(URL.createObjectURL(blob));
+            audio.onended = () => startRecording();
+            audio.play();
+          }
+        } else {
+          console.log("All questions finished");
+        }
+      }
+      async function startRecording() {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new AudioContext({ sampleRate: 16000 });
+        const source = audioContext.createMediaStreamSource(stream);
+        processor = audioContext.createScriptProcessor(4096, 1, 1);
+        source.connect(processor);
+        processor.connect(audioContext.destination);
+        processor.onaudioprocess = (event) => {
+          const audioData = event.inputBuffer.getChannelData(0);
+          const int16Audio = float32ToInt16(audioData);
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(int16Audio);
+          }
+        };
+      }
+      function stopRecording() {
+        if (processor) processor.disconnect();
+        if (stream) stream.getTracks().forEach(track => track.stop());
+        if (audioContext) audioContext.close();
+      }
+      function float32ToInt16(float32Array) {
+        const len = float32Array.length;
+        const int16Buffer = new ArrayBuffer(len * 2);
+        const int16View = new Int16Array(int16Buffer);
+        for (let i = 0; i < len; i++) {
+          int16View[i] = Math.min(1, Math.max(-1, float32Array[i])) * 0x7FFF;
+        }
+        return int16Buffer;
+      }
+      function toggleButton(buttonType) {
+        const voiceAssistantBtn = document.getElementById("voice-assistant-btn");
+        const voiceSubmissionBtn = document.getElementById("voice-submission-btn");
+        if (buttonType === "voice-assistant") {
+          console.log("Voice assistant is started");
+          voiceAssistantBtn.classList.add("active");
+          voiceAssistantBtn.classList.remove("inactive");
+          voiceSubmissionBtn.classList.remove("active");
+          voiceSubmissionBtn.classList.add("inactive");
+        } else if (buttonType === "voice-submission") {
+          console.log("Voice submission is started");
+          voiceSubmissionBtn.classList.add("active");
+          voiceSubmissionBtn.classList.remove("inactive");
+          voiceAssistantBtn.classList.remove("active");
+          voiceAssistantBtn.classList.add("inactive");
+        }
+      }
+      function resetFormContainer() {
+        const formContainer = document.querySelector(".form-container");
+        const inputs = formContainer.querySelectorAll("input");
+        const buttons = formContainer.querySelectorAll("button");
+        inputs.forEach(input => {
+          if (input.type === "url") {
+            input.value = "";
+          }
+        });
+        buttons.forEach(button => {
+          button.classList.remove("active");
+          button.classList.add("inactive");
+        });
+      }
+      // Show a toast message for feedback
+      function showToast(message, type = "error") {
+        const toast = document.getElementById("toast");
+        toast.innerText = message;
+        // Color based on type
+        toast.style.backgroundColor = type === "success" ? "#4CAF50" : "#F44336";
+        toast.style.display = "block";
+        setTimeout(() => {
+          toast.style.display = "none";
+        }, 5000); // show for 5 seconds
+      }
+
+
+      async function analyze_form() {
+        const url = document.getElementById("url").value.trim();
+        const voiceAssistantBtn = document.getElementById("voice-assistant-btn");
+        const voiceSubmissionBtn = document.getElementById("voice-submission-btn");
+        const formContainer = document.getElementById("rendered-form");
+        const errorContainer = document.getElementById("error-container");
+        formContainer.innerHTML = "";
+        errorContainer.innerHTML = "";
+        const isVoiceAssistantActive = voiceAssistantBtn.classList.contains("active");
+        const isVoiceSubmissionActive = voiceSubmissionBtn.classList.contains("active");
+        // Validation checks
+        if (!url) {
+          showToast(":no_entry_symbol: Please enter the form URL.", "error");
+          return;
+        }
+        if (!isVoiceAssistantActive && !isVoiceSubmissionActive) {
+          showToast(":no_entry_symbol: Please select a voice command (Assistant or Submission).", "error");
+          return;
+        }
+        // :white_tick: Success message before analyzing
+        showToast(":white_tick: Loading your URL Form...", "success");
+        resetFormContainer();  // :arrow_left: Clears the left-side form panel
+        formContainer.innerHTML = "Analyzing...";
+        try {
+          const res = await fetch("/analyze-form", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url, dynamic: true })
+          });
+          if (!res.ok) {
+            let msg = await res.text();
+            errorContainer.innerHTML = "❌ Error: " + msg;
+            return;
+          }
+          const result = await res.json();
+          window.questions = result.questions || [];
+          window.currentQuestionIndex = 0;
+          if (result.fields && Array.isArray(result.fields)) {
+            formContainer.innerHTML = renderDynamicForm(result.fields);
+            startWebSocketAndTTS();
+          } else {
+            formContainer.innerHTML = "<pre>" + JSON.stringify(result, null, 2) + "</pre>";
+          }
+          console.timeEnd("Form Rendering Time");
+        } catch (err) {
+          errorContainer.innerHTML = "❌ Error: " + err;
+        }
+      }
+      function renderDynamicForm(fields) {
+        let formHtml = '';
+        fields.forEach(field => {
+          let label = field.label || (field.name ? field.name.replace(/_/g, ' ').toUpperCase() : '');
+          let id = field.id || field.name;
+          let required = field.required ? 'required' : '';
+          let minLength = field.minLength ? `minlength="${field.minLength}"` : '';
+          let maxLength = field.maxLength ? `maxlength="${field.maxLength}"` : '';
+          let pattern = field.pattern ? `pattern="${field.pattern}"` : '';
+          if (field.type === 'radio') {
+            formHtml += `<div class="form-field"><label>${label}</label>`;
+            if (field.options && field.options.length > 0) {
+              field.options.forEach((option, idx) => {
+                let radioId = `${id}_${idx}`;
+                formHtml += `<label for="${radioId}" class="checkbox-label">
+                  <input type="radio" name="${field.name}" id="${radioId}" value="${option}" ${required}>${option}
+                </label>`;
+              });
+            }
+            formHtml += `</div>`;
+          } else if (field.type === 'checkbox') {
+            formHtml += `<div class="form-field"><label>${label}</label>`;
+            if (field.options && field.options.length > 0) {
+              field.options.forEach((option, idx) => {
+                let checkboxId = `${id}_${idx}`;
+                formHtml += `<label for="${checkboxId}" class="checkbox-label">
+                  <input type="checkbox" name="${field.name}" id="${checkboxId}" value="${option}" ${required}>${option}
+                </label>`;
+              });
+            } else {
+              formHtml += `<label for="${id}" class="checkbox-label">
+                <input type="checkbox" name="${field.name}" id="${id}" value="on" ${required}>${label}
+              </label>`;
+            }
+            formHtml += `</div>`;
+          } else if (field.tag === 'select') {
+            const options = field.options || [];
+            formHtml += `<div class="form-field"><label for="${id}">${label}</label>
+              <select name="${field.name}" id="${id}" ${required}>${options.map(option => `<option value="${option}">${option}</option>`).join('')}</select>
+            </div>`;
+          } else if (field.tag === 'textarea') {
+            formHtml += `<div class="form-field"><label for="${id}">${label}</label>
+              <textarea name="${field.name}" id="${id}" rows="4" ${required} ${minLength} ${maxLength}></textarea>
+            </div>`;
+          } else if (['text', 'password', 'email', 'tel', 'number', 'date', 'datetime-local', 'time'].includes(field.type)) {
+            formHtml += `<div class="form-field"><label for="${id}">${label}</label>
+              <input type="${field.type}" name="${field.name}" id="${id}" ${required} ${minLength} ${maxLength} ${pattern} />
+            </div>`;
+          } else if (field.type === 'file') {
+            formHtml += `<div class="form-field"><label for="${id}">${label}</label>
+              <input type="file" name="${field.name}" id="${id}" ${required} />
+            </div>`;
+          } else if (field.type === 'color') {
+            formHtml += `<div class="form-field"><label for="${id}">${label}</label>
+              <input type="color" name="${field.name}" id="${id}" ${required} />
+            </div>`;
+          } else if (field.type === 'url') {
+            formHtml += `<div class="form-field"><label for="${id}">${label}</label>
+              <input type="url" name="${field.name}" id="${id}" placeholder="Enter valid URL" ${required} />
+            </div>`;
+          }
+        });
+        formHtml += `<button type="submit">Submit</button>`;
+        return formHtml;
+      }
+      function validateForm() {
+        return true;
+      }
+      function fillField(fieldName, value) {
+        console.log("fillField", fieldName, value);
+        // Handle all fields (text, radio, checkbox, select, textarea)
+        const fields = document.querySelectorAll(`[name="${fieldName}"]`);
+        if (!fields.length) return;
+        fields.forEach(el => {
+          const type = (el.type || "").toLowerCase();
+          if (type === "radio") {
+            el.checked = (el.value.toLowerCase() === String(value).toLowerCase());
+          } else if (type === "checkbox") {
+            // Support multi-select answers as comma-separated
+            const values = Array.isArray(value)
+              ? value.map(v => v.toLowerCase())
+              : String(value).split(",").map(v => v.trim().toLowerCase());
+            el.checked = values.includes(el.value.toLowerCase());
+          } else {
+            el.value = value;
+          }
+        });
+        // Optional: focus next input
+        const inputs = Array.from(document.querySelectorAll("input, textarea, select"));
+        const first = fields[0];
+        const index = inputs.indexOf(first);
+        if (index !== -1 && inputs[index + 1]) {
+          inputs[index + 1].focus();
+        }
+      }
+    </script>
+</body>
+
+</html>
